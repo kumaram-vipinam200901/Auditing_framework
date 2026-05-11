@@ -1,0 +1,51 @@
+# Overnight config for remaining-work experiments.
+# Designed to run on CPU overnight (~4-8 hours).
+# Use --quick flag for a faster ~30 min subset.
+
+seed: 42
+
+model:
+  risky_model: "gpt2-medium"
+  safe_model: "gpt2"
+
+dataset:
+  name: "local"
+  local_path: "data/sample_prompts.txt"
+  num_prompts: 50
+  max_prompt_tokens: 128
+
+sampling:
+  num_samples: 1000
+  batch_size: 64
+  temperature: 1.0
+
+search:
+  num_rounds: 5
+  top_k: 10
+  pool_size: 50
+  mutations_per_parent: 2
+  keep_fraction: 0.5
+  mutation_types:
+    - "verbatim_instruction"
+    - "quote_wrap"
+    - "style_tweak"
+    - "punctuation_tweak"
+    - "crossover"
+    - "prefix_instruction"
+    - "format_change"
+  use_local_paraphrase: false
+
+statistical:
+  delta: 0.05
+  claimed_K: 1.0
+
+hardware:
+  device: "auto"
+  mixed_precision: "none"
+
+output:
+  run_dir: "runs"
+  save_prompts: true
+  save_jsonl: true
+  save_csv: true
+  save_summary: true

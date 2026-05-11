@@ -1,0 +1,59 @@
+# MVP config — matches the proposal's one-week MVP experiment exactly.
+# GPT-2 medium (risky) vs GPT-2 small (safe), 50 BookMIA prompts,
+# 500 samples, 5 rounds evolutionary search, top-10.
+# Expected runtime: ~6-8 GPU-hours.
+
+seed: 42
+
+model:
+  risky_model: "gpt2-medium"
+  safe_model: "gpt2"
+
+dataset:
+  name: "bookmia"
+  hf_dataset: "swj0419/BookMIA"
+  hf_split: "train"
+  hf_text_field: "text"
+  hf_label_field: "label"
+  num_prompts: 50
+  max_prompt_tokens: 64
+  member_only: true
+
+sampling:
+  num_samples: 500
+  batch_size: 64
+  temperature: 1.0
+
+search:
+  num_rounds: 5
+  top_k: 10
+  pool_size: 50
+  mutations_per_parent: 2
+  keep_fraction: 0.5
+  mutation_types:
+    - "verbatim_instruction"
+    - "quote_wrap"
+    - "style_tweak"
+    - "punctuation_tweak"
+    - "crossover"
+    - "prefix_instruction"
+    - "format_change"
+  use_local_paraphrase: false
+
+statistical:
+  delta: 0.05
+  claimed_K: 1.0
+
+hardware:
+  device: "auto"
+  mixed_precision: "none"
+  num_workers: 0
+  torch_compile: false
+  cache_kv: false
+
+output:
+  run_dir: "runs"
+  save_prompts: true
+  save_jsonl: true
+  save_csv: true
+  save_summary: true

@@ -1,0 +1,29 @@
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Metric} & \textbf{seed 42} & \textbf{seed 43} & \textbf{seed 44} & \textbf{mean} & \textbf{std} \\
+\midrule
+\multicolumn{6}{l}{\textit{Power experiment (rejection rate, vs.\ true KL)}} \\
+\quad reject @ n=1000, $K_{\mathrm{factor}}=0.00$ & 99.87\% & 99.73\% & 99.90\% & 99.83\% & 0.07\% \\
+\quad reject @ n=1000, $K_{\mathrm{factor}}=0.25$ & 97.73\% & 98.20\% & 98.23\% & 98.06\% & 0.23\% \\
+\quad reject @ n=1000, $K_{\mathrm{factor}}=0.50$ & 87.47\% & 87.70\% & 87.63\% & 87.60\% & 0.10\% \\
+\quad reject @ n=1000, $K_{\mathrm{factor}}=0.75$ & 32.97\% & 33.57\% & 33.30\% & 33.28\% & 0.25\% \\
+\quad reject @ n=1000, $K_{\mathrm{factor}}=0.95$ & 0.57\% & 0.73\% & 0.83\% & 0.71\% & 0.11\% \\
+\quad reject @ n=5000, $K_{\mathrm{factor}}=0.75$ & 94.80\% & 94.23\% & 94.50\% & 94.51\% & 0.23\% \\
+\quad reject @ n=5000, $K_{\mathrm{factor}}=0.95$ & 6.70\% & 5.50\% & 6.37\% & 6.19\% & 0.51\% \\
+\quad Type-I FPR (max over $K_{\mathrm{factor}}\!\ge\!1.05$, all $n$) & 0.00\% & 0.07\% & 0.00\% & 0.02\% & 0.03\% \\
+\midrule
+\multicolumn{6}{l}{\textit{Anchored decoding tightness ($n_{\mathrm{prompt}}=30$, $n_{\mathrm{audit}}=1000$, $\delta=0.05$)}} \\
+\quad exact violations,\ $K=0.50$ & 0/30 & 0/30 & 0/30 & --- & --- \\
+\quad audit-LB violations,\ $K=0.50$ & 0/30 & 0/30 & 0/30 & --- & --- \\
+\quad budget util.\ (median),\ $K=0.50$ & 46.6\% & 46.6\% & 46.6\% & --- & --- \\
+\quad exact violations,\ $K=1.00$ & 0/30 & 0/30 & 0/30 & --- & --- \\
+\quad audit-LB violations,\ $K=1.00$ & 0/30 & 0/30 & 0/30 & --- & --- \\
+\quad budget util.\ (median),\ $K=1.00$ & 23.3\% & 23.3\% & 23.3\% & --- & --- \\
+\quad exact violations,\ $K=2.00$ & 0/30 & 0/30 & 0/30 & --- & --- \\
+\quad audit-LB violations,\ $K=2.00$ & 0/30 & 0/30 & 0/30 & --- & --- \\
+\quad budget util.\ (median),\ $K=2.00$ & 11.6\% & 11.6\% & 11.6\% & --- & --- \\
+\quad exact violations,\ $K=5.00$ & 0/30 & 0/30 & 0/30 & --- & --- \\
+\quad audit-LB violations,\ $K=5.00$ & 0/30 & 0/30 & 0/30 & --- & --- \\
+\quad budget util.\ (median),\ $K=5.00$ & 4.7\% & 4.7\% & 4.7\% & --- & --- \\
+\bottomrule
+\end{tabular}
