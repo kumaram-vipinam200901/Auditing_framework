@@ -18,6 +18,7 @@
 \usepackage{microtype}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
+\usepackage{fancyvrb}
 \algrenewcommand\algorithmicrequire{\textbf{Input:}}
 \algrenewcommand\algorithmicensure{\textbf{Output:}}
 
@@ -46,7 +47,7 @@
 \maketitle
 
 \begin{abstract}
-Recent work proposes Near-Access Freeness (NAF) as a formal copyright bound for generative models, and anchored decoding as the first practical algorithm to enforce it.  But the literature contains \emph{no} tool to actually verify, after the fact, whether a deployed model meets a claimed NAF budget $K$.  This report builds and analyses such a tool.  We turn the per-prompt KL between a model and a copyright-safe reference into a high-confidence Empirical Bernstein lower bound, and combine it with an evolutionary worst-case search.  We then put the auditor itself under the microscope.  (i)~On a controlled risky/safe pair where the true token-level KL is computable in closed form, the auditor's Type-I false-positive rate is $0/75{,}000$ trials at $\delta=0.05$, and its power to detect a $50\%$-margin violation reaches $88\%$ at only $n=1000$ samples.  (ii)~Audited at the same $n,\delta$, the anchored-decoding algorithm of He et al.\ stays under its own claimed $K$ on \emph{all} 30 stress prompts and 4 budgets we test, with median budget utilisation $47\%$ at $K=0.5$ and zero auditor-flagged violations.  (iii)~A leave-one-out empirical study of the DP $\Rightarrow$ NAF implication exposes an important gap: at $\varepsilon=2$, the measured per-prompt KL between two paired DP-SGD fine-tunes is $7\times$--$10\times$ \emph{larger} than the textbook $\varepsilon^2/2$ bound, because the bound is over the mechanism's distribution over weights, not over the next-token distributions of any single trained checkpoint.  Code, configs and run logs are at \url{https://github.com/<anon>/naf-audit}.
+Near-Access Freeness (NAF) has been proposed as a formal copyright bound for generative models, and anchored decoding has been proposed as the first practical algorithm to enforce it.  What is missing is a way to check, after a model is deployed, whether the claimed NAF budget $K$ actually holds.  This report builds such a check and then asks how reliable the check itself is.  The auditor estimates the per-prompt KL between the deployed model and a copyright-safe reference, wraps the estimate in an Empirical Bernstein lower bound at confidence $1-\delta$, and pairs it with an evolutionary search over prompts.  Three experiments evaluate the resulting framework.  First, on a controlled risky/safe pair where the true token-level KL can be computed in closed form, the auditor produces $0/75{,}000$ false positives at $\delta=0.05$ and detects a $50\%$-margin violation with probability $0.88$ at $n=1000$ samples.  Second, applied to a self-contained port of the anchored-decoding solver of He et al.~\cite{he2026anchored}, the auditor never flags a violation on $30$ stress prompts across $4$ budgets, and the algorithm uses a median $47\%$ of its budget at $K=0.5$.  Third, a paired leave-one-out audit of DP-SGD fine-tunes shows that the implication ``$\varepsilon$-DP $\Rightarrow$ $\varepsilon^2/2$-NAF'' does not hold for individual trained checkpoints at any practical $\varepsilon$: the auditable per-prompt KL is $7$ to $10$ times larger than $\varepsilon^2/2$ at $\varepsilon=2$.  We discuss why this is consistent with the theory.  Code, configs, and run logs are at \url{https://github.com/kumaram-vipinam200901/Auditing\_framework}.
 \end{abstract}
 
 
@@ -55,21 +56,23 @@ Recent work proposes Near-Access Freeness (NAF) as a formal copyright bound for 
 \label{sec:intro}
 %% ============================================================
 
-Copyright lawsuits against generative AI providers \cite{nyt2023openai,authors2023suit} hinge on a deceptively simple question: \emph{how close is the model's output, conditional on a particular prompt, to text the model could only have produced if it had memorised a specific copyrighted work?}  Vyas, Kakade and Barak~\cite{vyas2023naf} formalised one answer to this question as \emph{Near-Access Freeness} (NAF): for every copyrighted work $C$, there must exist a ``safe'' model $P_{\mathrm{safe},C}$ that was trained without $C$, such that the deployed model $P^\star$ satisfies
+Copyright lawsuits against generative AI providers \cite{nyt2023openai,authors2023suit} turn on a single question: given a prompt, how close is the model's output to text that could only have been produced by training on a specific copyrighted work?  Vyas, Kakade and Barak~\cite{vyas2023naf} formalised one answer as \emph{Near-Access Freeness} (NAF): for every copyrighted work $C$, there must exist a ``safe'' model $P_{\mathrm{safe},C}$ that was trained without $C$, such that the deployed model $P^\star$ satisfies
 \[
-  \mathrm{KL}\bigl(P^\star(\,\cdot\mid x)\,\|\,P_{\mathrm{safe},C}(\,\cdot\mid x)\bigr)\le K\quad \text{for every prompt }x.
+  \mathrm{KL}\bigl(P^\star(\,\cdot\mid x)\,\|\,P_{\mathrm{safe},C}(\,\cdot\mid x)\bigr)\le K\quad \text{for every prompt }x,
 \]
-This is a clean, falsifiable property: if a deployer claims its system is $K$-NAF, an auditor with query access can in principle look for a single prompt that violates the bound.  He et al.~\cite{he2026anchored} recently gave the first algorithm---\emph{anchored decoding}---that provably satisfies a sequence-level NAF bound at decode time.  Their guarantee, however, is purely an upper bound \emph{by construction}.  It does not---and cannot---tell us whether a downstream re-implementation, or a third party's model with no NAF claim attached, actually meets a chosen $K$.
+where $P^\star(\cdot\mid x)$ and $P_{\mathrm{safe},C}(\cdot\mid x)$ denote the next-token probability distributions (over the vocabulary $\Sigma$) that the two models assign given the prompt $x$, $\mathrm{KL}$ is the Kullback--Leibler divergence, and $K\ge 0$ is a deployer-declared budget.
+The definition is falsifiable: if a deployer claims its system is $K$-NAF, an auditor with query access only needs to find one prompt that breaks the bound.  Anchored decoding \cite{he2026anchored} is the first algorithm with a sequence-level NAF guarantee at decode time.  But the guarantee is an analytical upper bound, derived from the construction of the algorithm itself.  It cannot be used to check whether a downstream reimplementation, or a third-party model that makes no NAF claim, actually meets a chosen $K$.  That requires an external audit.
 
-In our mid-semester report we built a first auditor for this question: per-prompt Empirical Bernstein lower bounds on KL with confidence $1-\delta$, plus an evolutionary search for worst-case prompts.  In this final report we sharpen the work in three directions, each addressing a concrete gap that had to be closed before the audit could be trusted as a primitive.
+This paper builds such an auditor and analyses four aspects of it.
 
 \begin{enumerate}\itemsep=2pt
-  \item \textbf{Calibrating the auditor (\S\ref{sec:calibration}).}  We construct a controlled risky/safe pair where the \emph{true} per-prompt KL is computable in closed form (sum over the full softmax vocabulary).  This lets us measure the auditor's Type-I error and its power as a function of sample size and ground-truth violation margin, on real LMs rather than toy distributions.
-  \item \textbf{Auditing the only known NAF method (\S\ref{sec:anchored}).}  We run our auditor against an own implementation of anchored decoding and quantify the \emph{tightness} of the algorithm: how close to its budget the algorithm gets, how much slack the auditor leaves, and how the two compose.
-  \item \textbf{Empirically probing the DP $\to$ NAF claim (\S\ref{sec:dpnaf}).}  Pure $\varepsilon$-DP fine-tuning is widely cited as automatically yielding $\tfrac{\varepsilon^2}{2}$-NAF.  We audit DP-SGD fine-tunes both against the pretrained baseline and in the correct paired leave-one-out setting, and discover that the auditable next-token-KL routinely exceeds $\varepsilon^2/2$ for tight $\varepsilon$.  We explain why this is consistent with the theory and what it means for practitioners who hope to ``get NAF for free''.
+  \item \textbf{The audit primitive (\S\ref{sec:framework}).}  For a single prompt we draw $n$ samples from the risky model, score them under both models, and apply Maurer--Pontil's Empirical Bernstein inequality to obtain a lower bound on $\mathrm{KL}(P^\star\|P_{\mathrm{safe}})$ at confidence $1-\delta$.  An evolutionary search over prompts turns this per-prompt bound into a Copyright Leakage Score (CLS) on a deployed system.
+  \item \textbf{Calibration of the auditor (\S\ref{sec:calibration}).}  On a controlled risky/safe pair where the true per-prompt KL is computable in closed form (sum over the full softmax vocabulary), we measure the auditor's Type-I error and its power as a function of sample size and ground-truth violation margin.  This is done on real language models rather than toy distributions.
+  \item \textbf{Auditing the only known NAF method (\S\ref{sec:anchored}).}  We port the Newton solver of He et al.~\cite{he2026anchored} into a self-contained module that exposes the same interface as the auditor, and use the auditor to quantify how tight the algorithm is: how close to its budget it gets, how much slack the auditor leaves, and how the two compose.
+  \item \textbf{Empirical study of the DP $\to$ NAF claim (\S\ref{sec:dpnaf}).}  $\varepsilon$-DP fine-tuning is often quoted as yielding $\tfrac{\varepsilon^2}{2}$-NAF for free.  We audit DP-SGD fine-tunes both against the pretrained baseline and in the paired leave-one-out setting, and find that the auditable per-prompt KL routinely exceeds $\varepsilon^2/2$ at practical $\varepsilon$.  We explain why this is consistent with the theory and what it means for a deployer.
 \end{enumerate}
 
-We also re-summarise the multi-family audit numbers from the mid-report (\S\ref{sec:results}) and discuss limitations (\S\ref{sec:discussion}).  All experiments fit on a single laptop GPU (RTX 2000 Ada); end-to-end runtime is under three hours.
+Section~\ref{sec:results} reports a multi-family audit across eight tokeniser-matched risky/safe pairs and Section~\ref{sec:discussion} discusses limitations.  All experiments run on a single laptop GPU (RTX 2000 Ada) and finish end-to-end in under three hours.
 
 
 %% ============================================================
@@ -78,18 +81,34 @@ We also re-summarise the multi-family audit numbers from the mid-report (\S\ref{
 %% ============================================================
 
 \paragraph{NAF and its contrast with DP.}
-Let $\Sigma$ be a finite vocabulary.  $P^\star$ is $K$-NAF (with respect to a divergence $\Delta$ and a family $\{P_{\mathrm{safe},C}\}_{C\in\mathcal C}$ of leave-one-out reference models) if $\Delta(P^\star(\cdot\mid x)\,\|\,P_{\mathrm{safe},C}(\cdot\mid x))\le K$ for every prompt $x$ and every $C\in\mathcal C$~\cite{vyas2023naf}.  We use $\Delta=\mathrm{KL}$ throughout.  An $\varepsilon$-DP training mechanism induces $\frac{\varepsilon^2}{2}$-zCDP and hence, after post-processing, gives a per-prompt KL bound of $\frac{\varepsilon^2}{2}$ between the outputs on $D$ and on $D\setminus\{C\}$ \cite{bunsteinke2016cdp}.  We empirically interrogate the practical strength of this implication in \S\ref{sec:dpnaf}.
+Let $\Sigma$ be a finite vocabulary and $x\in\Sigma^*$ a prompt.  The deployed (``risky'') language model $P^\star$ induces, for every $x$, a probability distribution $P^\star(\cdot\mid x)$ over the next token $y\in\Sigma$.  Let $\mathcal C$ denote a corpus of copyrighted works and, for each $C\in\mathcal C$, let $P_{\mathrm{safe},C}$ be a reference model trained on a dataset $D\setminus\{C\}$ (the full training set with $C$ removed).  $P^\star$ is said to be \emph{$K$-NAF} with respect to a divergence $\Delta$ and the family $\{P_{\mathrm{safe},C}\}_{C\in\mathcal C}$ if
+\[
+  \Delta\bigl(P^\star(\cdot\mid x)\,\|\,P_{\mathrm{safe},C}(\cdot\mid x)\bigr)\le K\quad\text{for every prompt $x$ and every $C\in\mathcal C$}~\cite{vyas2023naf}.
+\]
+We take $\Delta=\mathrm{KL}$ throughout.  An $(\varepsilon,\delta_{\mathrm{DP}})$-differentially private training mechanism with $\varepsilon>0$ the privacy budget and $\delta_{\mathrm{DP}}>0$ the failure probability induces $\tfrac{\varepsilon^2}{2}$-zero-concentrated DP (zCDP), and hence, after post-processing, a KL bound of $\tfrac{\varepsilon^2}{2}$ between the output distributions of the mechanism on $D$ and on $D\setminus\{C\}$~\cite{bunsteinke2016cdp}.  Section~\ref{sec:dpnaf} examines the practical strength of this implication.
 
 \paragraph{Anchored decoding.}
-He et al.~\cite{he2026anchored} solve, at every decoding step, $\arg\min_Q\mathrm{KL}(Q\|P_{\mathrm{risky},t})$ subject to $\mathrm{KL}(Q\|P_{\mathrm{safe},t})\le k_t$.  The KKT solution $P^\star_t(y)\propto P_{\mathrm{risky},t}(y)^{1/(1+\lambda)}P_{\mathrm{safe},t}(y)^{\lambda/(1+\lambda)}$ is a log-linear interpolation between risky and safe; the dual $\lambda$ is solved per step by Newton's method to make the constraint tight.  By the KL chain rule, picking any $\{k_t\}$ with $\sum_t k_t\le K$ gives a sequence-level $K$-NAF guarantee.
+Fix a decoding step $t$ and let $P_{\mathrm{risky},t}$, $P_{\mathrm{safe},t}$ denote the next-token distributions of the risky and safe models at that step (conditioned on the prompt and the tokens decoded so far).  He et al.~\cite{he2026anchored} obtain the decoded distribution by solving, at every step, $\arg\min_Q\mathrm{KL}(Q\|P_{\mathrm{risky},t})$ subject to $\mathrm{KL}(Q\|P_{\mathrm{safe},t})\le k_t$, where $Q$ ranges over distributions on $\Sigma$ and $k_t\ge 0$ is a per-step KL budget.  The KKT solution is the log-linear interpolation
+\[
+  P^\star_t(y)\;\propto\;P_{\mathrm{risky},t}(y)^{1/(1+\lambda)}\,P_{\mathrm{safe},t}(y)^{\lambda/(1+\lambda)},
+\]
+with $y\in\Sigma$ a token and $\lambda\ge 0$ the dual variable of the KL constraint; $\lambda$ is found per step by Newton's method so that the constraint is tight.  Picking any per-step budgets $\{k_t\}$ with $\sum_t k_t\le K$ then yields, by the KL chain rule, a sequence-level $K$-NAF guarantee.
 
 \paragraph{Auditor.}
-For any prompt $x$, let $p=P^\star(\cdot\mid x)$, $q=P_{\mathrm{safe}}(\cdot\mid x)$, and $Z(y)=\log p(y)-\log q(y)$.  Then $\mathbb E_{Y\sim p}[Z(Y)]=\mathrm{KL}(p\|q)$.  Drawing $Y_1,\dots,Y_n\overset{\text{i.i.d.}}{\sim}p$ and writing $Z_i=Z(Y_i)$ gives the unbiased Monte-Carlo mean $\bar Z_n$.  Maurer--Pontil's Empirical Bernstein bound \cite{maurer2009bernstein}, applied after rescaling $Z_i\in[a,b]$ with range $R=b-a$ (we clip log-probabilities at the fp32 floor $2^{-126}$, giving $|Z|\le B\approx 88$, $R\le 2B$), yields with probability $\ge 1-\delta$
+Fix a prompt $x$ and write $p:=P^\star(\cdot\mid x)$, $q:=P_{\mathrm{safe}}(\cdot\mid x)$ for the two next-token distributions of interest.  Define the per-token \emph{log-density ratio} $Z(y):=\log p(y)-\log q(y)$ for $y\in\Sigma$.  Its expectation under the risky model is the quantity we want to bound:
+\[
+  \mathbb E_{Y\sim p}[Z(Y)]\;=\;\mathrm{KL}(p\|q).
+\]
+Draw $n$ i.i.d.\ samples $Y_1,\dots,Y_n\sim p$, let $Z_i:=Z(Y_i)$, and let
+\[
+  \bar Z_n\;:=\;\tfrac{1}{n}\textstyle\sum_{i=1}^n Z_i,\qquad V_n\;:=\;\tfrac{1}{n-1}\textstyle\sum_{i=1}^n(Z_i-\bar Z_n)^2
+\]
+be the sample mean and unbiased sample variance.  Maurer--Pontil's Empirical Bernstein bound~\cite{maurer2009bernstein}, applied after rescaling $Z_i$ to a bounded interval $[a,b]$ with range $R:=b-a$ (we clip log-probabilities at the fp32 floor $2^{-126}$, giving $|Z|\le B\approx 88$ and $R\le 2B$), yields the one-sided inequality
 \begin{equation}
 \label{eq:bernstein}
-  \mathrm{KL}(p\|q)\;\ge\;\bar Z_n - \underbrace{\sqrt{\frac{2 V_n\ln(2/\delta)}{n}}+\frac{7R\ln(2/\delta)}{3(n-1)}}_{\,t_n(\delta)},\quad V_n=\frac{1}{n-1}\sum_i(Z_i-\bar Z_n)^2.
+  \mathrm{KL}(p\|q)\;\ge\;\bar Z_n\;-\;\underbrace{\sqrt{\tfrac{2 V_n\ln(2/\delta)}{n}}+\tfrac{7R\ln(2/\delta)}{3(n-1)}}_{=:\;t_n(\delta)\;\text{(Bernstein gap)}}
 \end{equation}
-Whenever $\bar Z_n-t_n(\delta)>K$, the $K$-NAF claim is falsified at confidence $1-\delta$.  Under absolute continuity ($q\ll p$ wherever needed; trivially true for softmax LMs), this is the cleanest variance-adaptive lower bound that does not require a parametric model of $Z$.  Algorithm~\ref{alg:auditor} summarises the per-prompt test.
+with probability at least $1-\delta$, where $\delta\in(0,1)$ is the confidence parameter and $t_n(\delta)$ is the Bernstein correction.  We write $\widehat{\mathrm{LB}}:=\bar Z_n-t_n(\delta)$ for the resulting lower bound on the KL.  Whenever $\widehat{\mathrm{LB}}>K$, the $K$-NAF claim is falsified at confidence $1-\delta$.  Under absolute continuity ($q\ll p$ wherever needed, which holds trivially for softmax LMs), \eqref{eq:bernstein} is the cleanest variance-adaptive lower bound on $\mathrm{KL}(p\|q)$ that does not require a parametric model of $Z$.  Algorithm~\ref{alg:auditor} summarises the per-prompt test.
 
 \begin{algorithm}[H]
 \caption{Bernstein KL auditor (per prompt)}
@@ -108,7 +127,7 @@ Whenever $\bar Z_n-t_n(\delta)>K$, the $K$-NAF claim is falsified at confidence 
 \end{algorithm}
 
 \paragraph{Worst-case search.}
-The auditor is most useful at the prompt that maximises (\ref{eq:bernstein}).  We follow the mid-report's evolutionary loop (Algorithm~\ref{alg:evo}): starting from a pool of seed prompts (BookMIA~\cite{shi2024bookmia} and WikiText-103), we evaluate $\mathrm{LB}(x;\delta)=\bar Z_n(x)-t_n(\delta)$, retain the top-$k$, and apply mutation operators (verbatim instruction, quote-wrap, formatting, style, crossover) to seed the next round.  The Copyright Leakage Score is $\mathrm{CLS}=\max_{x}\mathrm{LB}(x;\delta)$.
+The auditor is most useful at the prompt that maximises (\ref{eq:bernstein}).  Algorithm~\ref{alg:evo} describes the search: starting from a pool of seed prompts (BookMIA~\cite{shi2024bookmia} and WikiText-103), we evaluate $\mathrm{LB}(x;\delta)=\bar Z_n(x)-t_n(\delta)$, retain the top-$k$, and apply mutation operators (verbatim instruction, quote-wrap, formatting, style, crossover) to seed the next round.  The Copyright Leakage Score is $\mathrm{CLS}=\max_{x}\mathrm{LB}(x;\delta)$.
 
 \begin{algorithm}[H]
 \caption{Evolutionary adversarial prompt search}
@@ -133,7 +152,7 @@ The auditor is most useful at the prompt that maximises (\ref{eq:bernstein}).  W
 \label{sec:calibration}
 %% ============================================================
 
-A lower-confidence-bound auditor is only as useful as its Type-I error (false positives---flagging a compliant model) and its power (true positives---catching a real violator).  These are usually impossible to measure on real LMs because the ground-truth KL is unknown.  We exploit the fact that for two language models with explicit softmax heads we can compute the per-prompt token-level KL \emph{exactly} by summing over the vocabulary,
+A lower-confidence-bound auditor is only as useful as its Type-I error rate (the probability of flagging a compliant model) and its power (the probability of catching a real violator).  These two quantities are usually impossible to measure directly on real language models because the ground-truth KL is not known.  For two language models with explicit softmax heads, however, the per-prompt token-level KL can be computed exactly by summing over the vocabulary,
 \begin{equation}
 \label{eq:exact-kl}
   \mathrm{KL}_\star(x)\;=\;\sum_{y\in\Sigma}P^\star(y\mid x)\,\bigl[\log P^\star(y\mid x)-\log P_{\mathrm{safe}}(y\mid x)\bigr].
@@ -157,13 +176,13 @@ We use $P^\star=$\textsc{gpt2-medium}, $P_{\mathrm{safe}}=$\textsc{gpt2}, $\delt
 \end{figure}
 
 \paragraph{Type-I error.}
-Across the $9\cdot 5=45$ Type-I cells of the null pair (\textsc{gpt2}/\textsc{gpt2}), the empirical false-positive rate is \textbf{$0/75{,}000$} trials, comfortably below $\delta=0.05$.  Across the corresponding $4\cdot 5=20$ Type-I cells of the gpt2-medium/gpt2 pair (where $K_{\mathrm{factor}}\ge 1.05$), the empirical FPR is also $0/60{,}000$.  The Empirical Bernstein bound is conservative; a Hoeffding-only auditor would be more so.
+Across the $9\cdot 5=45$ Type-I cells of the null pair (\textsc{gpt2}/\textsc{gpt2}), the empirical false-positive rate is \textbf{$0/75{,}000$} trials, well below $\delta=0.05$.  Across the corresponding $4\cdot 5=20$ Type-I cells of the gpt2-medium/gpt2 pair (where $K_{\mathrm{factor}}\ge 1.05$), the empirical FPR is also $0/60{,}000$.  The Empirical Bernstein bound is conservative by design; a Hoeffding-only auditor would be even more so.
 
 \paragraph{Power.}
-Figure~\ref{fig:power}(a) is the headline result.  At $n=1000$ the auditor rejects $99.9\%$ of $K=0$ claims, $97.7\%$ of $25\%$-margin claims, $87.5\%$ of $50\%$-margin claims, $33.0\%$ of $75\%$-margin claims, and only $0.6\%$ of $95\%$-margin claims.  Power scales as $\sqrt n$, as predicted by (\ref{eq:bernstein}); a $5{\times}$ increase to $n=5000$ closes the gap at the $95\%$-margin to $6.7\%$ but is essentially saturated at $\le 75\%$ margins.  The take-away: the auditor is reliable for catching violations of \emph{at least} $50\%$ of the budget, which is the regime that copyright auditors care about (a deployer who is half a budget away from non-compliance is already in trouble).  Detecting near-boundary violations would require either much larger $n$ or a tighter concentration inequality (e.g.\ subgaussian-style).
+Figure~\ref{fig:power}(a) reports rejection rates as a function of the claimed $K$.  At $n=1000$ the auditor rejects $99.9\%$ of $K=0$ claims, $97.7\%$ of $25\%$-margin claims, $87.5\%$ of $50\%$-margin claims, $33.0\%$ of $75\%$-margin claims, and $0.6\%$ of $95\%$-margin claims.  Power scales as $\sqrt n$, as predicted by~\eqref{eq:bernstein}; raising $n$ to $5000$ reduces the gap at the $95\%$-margin to $6.7\%$ but yields little improvement at margins of $75\%$ or less.  In short, the auditor is reliable at margins of at least $50\%$ of the budget, which is the operating regime relevant to a copyright auditor.  Detecting near-boundary violations would require either a much larger $n$ or a tighter concentration inequality (for example, sub-Gaussian-style).
 
 \paragraph{Calibration sanity.}
-The per-trial scatter of $\widehat{\mathrm{LB}}$ vs.\ true KL (Appendix Figure~\ref{fig:calib-scatter}) lies entirely below the diagonal at every $n$, confirming \eqref{eq:bernstein} as a valid one-sided bound.  The Bernstein gap $t_n(\delta)$ scales as $1/\sqrt n$ to within experimental noise (Appendix Figure~\ref{fig:bgap}), matching the theoretical first-order term.  All headline numbers above are within $\pm 0.5$ percentage points across three independent random seeds (Appendix~\ref{app:repro}, Table~\ref{tab:repro}).
+The per-trial scatter of $\widehat{\mathrm{LB}}$ against the true KL (Appendix Figure~\ref{fig:calib-scatter}) lies entirely below the diagonal at every $n$, which is consistent with~\eqref{eq:bernstein} being a valid one-sided bound.  The Bernstein gap $t_n(\delta)$ scales as $1/\sqrt n$ up to experimental noise (Appendix Figure~\ref{fig:bgap}), matching the leading term of the bound.  The numbers above are reproducible to within $\pm 0.5$ percentage points across three independent random seeds (Appendix~\ref{app:repro}, Table~\ref{tab:repro}).
 
 
 %% ============================================================
@@ -171,7 +190,7 @@ The per-trial scatter of $\widehat{\mathrm{LB}}$ vs.\ true KL (Appendix Figure~\
 \label{sec:anchored}
 %% ============================================================
 
-Anchored decoding is the only published algorithm with a provable per-prompt NAF bound.  For our framework to be useful, it must (i) declare the algorithm compliant when run inside the budget, (ii) flag it as soon as the budget is exceeded, and (iii) not waste budget---i.e.\ the auditor's lower bound must not be vacuously small.  We test all three on a $30$-prompt set with $K\in\{0.5,1.0,2.0,5.0\}$, $n=1000$, $\delta=0.05$, with risky/safe = gpt2-medium/gpt2.  Algorithm~\ref{alg:anchored} summarises the decoding procedure we audit.
+Anchored decoding is the only published algorithm with a provable per-prompt NAF bound, and it is therefore the natural target for the auditor.  A useful auditor should declare the algorithm compliant when it runs inside the budget, flag it as soon as the budget is exceeded, and remain reasonably tight (the lower bound should not be vacuously small).  We test all three properties on a set of $30$ prompts at $K\in\{0.5,1.0,2.0,5.0\}$ with $n=1000$ and $\delta=0.05$, using gpt2-medium and gpt2 as the risky and safe models.  Algorithm~\ref{alg:anchored} summarises the decoding procedure that is audited.
 
 \begin{algorithm}[H]
 \caption{Anchored decoding (per-prompt $K$-NAF)~\cite{he2026anchored}}
@@ -197,9 +216,9 @@ Anchored decoding is the only published algorithm with a provable per-prompt NAF
 \label{fig:anchored}
 \end{figure}
 
-Figure~\ref{fig:anchored} summarises the result.  The exact KL of the anchored mixture (computed in closed form via the closed-form solution $P^\star_t\propto P_{\mathrm{risky},t}^{1/(1+\lambda)} P_{\mathrm{safe},t}^{\lambda/(1+\lambda)}$ and a 1-D root-finder for $\lambda$) is below the budget on every prompt and every $K$ (\textbf{$0/120$} violations).  At $K=0.5$ the algorithm uses its full budget for the prompts that need it: the maximum exact KL across $30$ prompts is exactly $0.500$, and the median budget utilisation is $46.6\%$ (Appendix Table~\ref{tab:anchored-detail}).  At larger $K$ the budget is mostly slack because the natural KL of the risky model is small for these prompts.
+Figure~\ref{fig:anchored} summarises the result.  The exact KL of the anchored mixture, obtained by evaluating $P^\star_t\propto P_{\mathrm{risky},t}^{1/(1+\lambda)} P_{\mathrm{safe},t}^{\lambda/(1+\lambda)}$ and solving for $\lambda$ with a one-dimensional root-finder, is below the budget on every prompt and every $K$ ($0/120$ violations).  At $K=0.5$ the algorithm uses its full budget on the prompts that need it: the maximum exact KL across $30$ prompts is exactly $0.500$, and the median budget utilisation is $46.6\%$ (Appendix Table~\ref{tab:anchored-detail}).  At larger $K$ the budget is mostly slack because the natural KL of the risky model is small for these prompts.
 
-The auditor's $\widehat{\mathrm{LB}}$ tracks the true KL with a typical Bernstein gap of $\sim 0.07$ (median).  No prompt produces $\widehat{\mathrm{LB}}>K$ at any of the four budgets, so the auditor never falsely flags the algorithm.  Combined with the $88\%$ power calibration of \S\ref{sec:calibration}, this means: \emph{if anchored decoding had been buggy and produced a $\ge 50\%$-budget overshoot on any of these prompts, the auditor would have caught it with probability at least $0.88$.}  Together, the algorithm and the audit form a closed loop: the algorithm controls the upper bound by construction; the audit independently certifies the lower bound from samples.
+The auditor's $\widehat{\mathrm{LB}}$ tracks the true KL with a typical (median) Bernstein gap of $\sim 0.07$.  No prompt produces $\widehat{\mathrm{LB}}>K$ at any of the four budgets, so the auditor never falsely flags the algorithm.  Combined with the $88\%$ power calibration of Section~\ref{sec:calibration}, this implies: if anchored decoding had been buggy and produced a $\ge 50\%$-budget overshoot on any of these prompts, the auditor would have caught it with probability at least $0.88$.  The two components complement each other: the algorithm provides an upper bound by construction, the audit provides an independent lower bound from samples.
 
 
 %% ============================================================
@@ -207,16 +226,16 @@ The auditor's $\widehat{\mathrm{LB}}$ tracks the true KL with a typical Bernstei
 \label{sec:dpnaf}
 %% ============================================================
 
-A single line of folklore links DP and NAF: $\varepsilon$-DP fine-tuning is automatically $\tfrac{\varepsilon^2}{2}$-NAF (\cite{vyas2023naf,bunsteinke2016cdp}, eq.~5 of our mid-report).  We probe what this implication actually buys you in practice.
+The connection between DP and NAF is usually stated as a one-line implication: $\varepsilon$-DP fine-tuning is automatically $\tfrac{\varepsilon^2}{2}$-NAF~\cite{vyas2023naf,bunsteinke2016cdp}.  This section asks what that implication actually delivers when applied to a single trained model.
 
 \paragraph{Setup.}
 We fine-tune \textsc{gpt2} for $10$ epochs on a small ``copyright-prone'' text mix ($11$ blocks of $64$ tokens; openings of \emph{A Tale of Two Cities}, \emph{1984}, \emph{Moby-Dick}) using DP-SGD via \texttt{opacus} 1.6 \cite{yousefpour2021opacus}.  Embedding rows are frozen (else the noise would dominate due to their dimension); $\delta_{\mathrm{DP}}=10^{-5}$, gradient clipping $\|\nabla\|\le 1$, $B=4$, $\eta=5\!\times\!10^{-3}$.  We run three privacy regimes: $\varepsilon=\infty$ (non-private SGD), $\varepsilon=8$ and $\varepsilon=2$ (achieved $\varepsilon=7.86$ and $1.96$ respectively).  We then audit $20$ stress prompts with $n=1000$ samples per prompt.
 
 \paragraph{Audit~A: vs.\ pretrained baseline.}
-Figure~\ref{fig:dpnaf}(a) plots $\widehat{\mathrm{KL}}(P_{\mathrm{ft}}\,\|\,P_{\mathrm{pretrain}})$ for each regime.  The non-private fine-tune drifts modestly (median $0.28$, max $1.72$).  Stronger DP gives \emph{larger}, not smaller, KL: median $1.80$ at $\varepsilon=8$ and $9.05$ at $\varepsilon=2$.  This is not a bug in the audit nor a violation of the theorem.  The $\frac{\varepsilon^2}{2}$ bound is a statement about the LOO-swap pair $\bigl(P_{\mathrm{ft}(D)},P_{\mathrm{ft}(D\setminus\{C\})}\bigr)$, not about $P_{\mathrm{pretrain}}$ at all.  When $\varepsilon$ is small, the noise scale needed to enforce DP is large enough to push the fine-tune's next-token distribution \emph{further} from pretrained than non-private SGD would, in random directions.
+Figure~\ref{fig:dpnaf}(a) plots the auditor's estimate of $\mathrm{KL}(P_{\mathrm{ft}}\,\|\,P_{\mathrm{pretrain}})$, where $P_{\mathrm{ft}}$ is the fine-tuned model and $P_{\mathrm{pretrain}}$ is the original pretrained checkpoint.  The non-private fine-tune drifts modestly (median $0.28$, max $1.72$).  Stronger DP produces \emph{larger}, not smaller, KL: median $1.80$ at $\varepsilon=8$ and $9.05$ at $\varepsilon=2$.  This is neither a bug in the audit nor a violation of the theorem: the $\varepsilon^2/2$ bound is a statement about the leave-one-out pair $\bigl(P_{\mathrm{ft}(D)},P_{\mathrm{ft}(D\setminus\{C\})}\bigr)$, not about $P_{\mathrm{pretrain}}$.  When $\varepsilon$ is small, the noise needed to enforce DP is large enough to push the fine-tune's next-token distribution further from pretrained than non-private SGD would, in random directions.
 
 \paragraph{Audit~B: paired leave-one-out (the right test).}
-We then run two DP fine-tunes per $\varepsilon$ from the same initialisation: $M_{\mathrm{full}}$ on $D$ and $M_{\mathrm{loo}}$ on $D\setminus\{\text{block}_0\}$, with paired RNG seeds, identical schedule, and identical privacy budget.  We audit $\widehat{\mathrm{KL}}(M_{\mathrm{full}}\,\|\,M_{\mathrm{loo}})$ on $20$ prompts and compare to the bound $\varepsilon^2/2$ (Figure~\ref{fig:dpnaf}(b)).  At $\varepsilon=8$ the bound $\varepsilon^2/2\!=\!30.9$ is comfortably loose: median measured KL $3.25$, max $6.18$, $0/20$ violations.  At $\varepsilon=2$ the bound $\varepsilon^2/2\!=\!1.92$ is \emph{exceeded by every audited prompt}: median $14.91$, max $20.12$, \textbf{$20/20$ violations}.
+For each $\varepsilon$ we ran two DP fine-tunes from the same initialisation, $M_{\mathrm{full}}$ on $D$ and $M_{\mathrm{loo}}$ on $D\setminus\{\text{block}_0\}$, with paired RNG seeds, an identical schedule, and the same privacy budget.  The auditor estimates $\mathrm{KL}(M_{\mathrm{full}}\,\|\,M_{\mathrm{loo}})$ on $20$ prompts and compares it to the theoretical bound $\varepsilon^2/2$ (Figure~\ref{fig:dpnaf}(b)).  At $\varepsilon=8$ the bound is $\varepsilon^2/2=30.9$ and the measured KL stays well below it: median $3.25$, max $6.18$, $0/20$ violations.  At $\varepsilon=2$ the bound is $\varepsilon^2/2=1.92$ and is exceeded by every audited prompt: median $14.91$, max $20.12$, \textbf{$20/20$ violations}.
 
 \begin{figure}[t]
 \centering
@@ -235,10 +254,10 @@ We then run two DP fine-tunes per $\varepsilon$ from the same initialisation: $M
 \end{figure}
 
 \paragraph{Why this is consistent with the theorem.}
-Pure $\varepsilon$-DP gives an output-distribution-level Rényi divergence bound.  Reading $\varepsilon^2/2$ as a per-prompt next-token KL bound for a \emph{single} fine-tuned checkpoint hides three reductions.  First, $\varepsilon$-DP $\Rightarrow$ $\frac{\varepsilon^2}{2}$-zCDP holds at the level of the mechanism's distribution over weights $\theta$.  Second, post-processing then bounds $\mathrm{KL}\bigl(\mathcal M(D)\,\|\,\mathcal M(D')\bigr)\le\frac{\varepsilon^2}{2}$ between the \emph{distributions} over all next-token outputs that those weights induce.  Third, applying this to a single $\theta$ requires either (i) an additional Markov / convexity step that is loose by orders of magnitude when the ensemble variance is large (as it is for DP-SGD on small data), or (ii) interpreting the audit as estimating an expectation under the mechanism's randomness, which would in turn require averaging over many independent fine-tuned checkpoints.  Our point-estimate audit captures something different: \emph{the divergence achieved by a particular trained model on a particular prompt}.  This is arguably the more practically relevant quantity for a downstream copyright auditor, but it is not what $\varepsilon^2/2$ controls.
+Pure $\varepsilon$-DP gives a R\'enyi divergence bound at the level of the mechanism's output distribution.  Reading $\varepsilon^2/2$ as a per-prompt next-token KL bound for a single fine-tuned checkpoint hides three reductions.  First, the implication $\varepsilon$-DP $\Rightarrow$ $\varepsilon^2/2$-zCDP holds at the level of the mechanism's distribution over weights $\theta$.  Second, post-processing bounds $\mathrm{KL}\bigl(\mathcal M(D)\,\|\,\mathcal M(D')\bigr)\le\varepsilon^2/2$ between the distributions over all next-token outputs that those weights induce, where $\mathcal M(D)$ denotes the mechanism's output distribution on dataset $D$.  Third, transferring this to a single $\theta$ requires either an additional Markov or convexity step (which is loose by orders of magnitude when the ensemble variance is large, as it is for DP-SGD on small data) or treating the audit as an estimate of an expectation taken over the mechanism's randomness (which would require averaging over many independently fine-tuned checkpoints).  Our point-estimate audit measures a different object: the divergence achieved by a particular trained model on a particular prompt.  This is the quantity a downstream copyright auditor cares about, but it is not what $\varepsilon^2/2$ controls.
 
-\paragraph{Take-away.}
-A practitioner who fine-tunes with DP-SGD at a publishable $\varepsilon$ does \emph{not} thereby produce a model with a per-prompt KL bound to the pretrained baseline.  If a hard NAF guarantee is needed (e.g.\ for legal compliance), it must come from an inference-time mechanism such as anchored decoding (\S\ref{sec:anchored})---which directly enforces the bound by construction---or from explicit ensemble averaging across DP runs.  We hope this finding informs how DP$\to$NAF claims are framed in subsequent literature.
+\paragraph{Implications for practice.}
+Fine-tuning with DP-SGD at a publishable $\varepsilon$ does not, on its own, deliver a model with a per-prompt KL bound to the pretrained baseline.  A hard NAF guarantee, for example one needed for legal compliance, therefore has to come from an inference-time mechanism such as anchored decoding (Section~\ref{sec:anchored}), which enforces the bound by construction, or from explicit ensemble averaging over independent DP runs.  This caveat is worth stating alongside DP$\to$NAF claims in future work.
 
 
 %% ============================================================
@@ -246,11 +265,11 @@ A practitioner who fine-tunes with DP-SGD at a publishable $\varepsilon$ does \e
 \label{sec:results}
 %% ============================================================
 
-For completeness we re-summarise the multi-family audit numbers from the mid-report; full ablations and figures are in Appendix~\ref{app:additional}.  Across $8$ tokeniser-matched risky/safe pairs from three families (GPT-2, Pythia, OPT), the evolutionary search consistently outperforms a random-prompt baseline (Table~\ref{tab:modelpairs}); the sanity check (gpt2 vs.\ gpt2) returns $\mathrm{CLS}\approx 0$ as expected.  BookMIA prompts produce a substantially higher CLS than WikiText prompts, consistent with the hypothesis that books are over-represented in GPT-2's pretraining corpus and easier to memorise \cite{carlini2021extracting,shi2024bookmia}.  Format-changing mutations (quote wraps, prefix instructions) are the strongest single operator, and the CLS plateaus around $5$ rounds.  Crucially, for every model pair the auditor surfaces concrete prompts on which the GPT-2 family violates a $K=1.0$ NAF claim with confidence $0.95$.
+We applied the auditor to eight tokeniser-matched risky/safe pairs drawn from three families (GPT-2, Pythia, OPT); full ablations and figures are in Appendix~\ref{app:additional}.  Across all pairs the evolutionary search outperforms a random-prompt baseline (Table~\ref{tab:modelpairs}), and the sanity check (gpt2 vs.\ gpt2) returns $\mathrm{CLS}\approx 0$ as expected.  BookMIA prompts produce a substantially higher CLS than WikiText prompts, in line with prior findings that books are over-represented in GPT-2's pretraining corpus and easier to memorise \cite{carlini2021extracting,shi2024bookmia}.  Format-changing mutations (quote wraps, prefix instructions) are the strongest single operator, and the CLS plateaus around $5$ rounds.  For every non-trivial pair the auditor surfaces concrete prompts on which the larger model violates a $K=1.0$ NAF claim at confidence $0.95$.
 
 \begin{table}[t]
 \centering
-\caption{Copyright Leakage Score (max KL lower bound) and number of violations at $K=1.0,\delta=0.05,n=1000$, over $200$ prompts $\times$ $5$ rounds.  Same data as Table~1 of the mid-report, reproduced here for self-containedness.}
+\caption{Copyright Leakage Score (max KL lower bound) and number of violations at $K=1.0$, $\delta=0.05$, $n=1000$, over $200$ prompts and $5$ rounds.}
 \label{tab:modelpairs}
 \small
 \begin{tabular}{@{}llcccc@{}}
@@ -280,24 +299,30 @@ OPT & 350M $\to$ 125M & 3.08 & 2.08 & 133 & 9 \\
 %% ============================================================
 
 \paragraph{What we now know.}
-Our auditor is conservative (Type-I FPR $=0$ on $75{,}000$ null trials), powerful in the regime that matters ($\ge 88\%$ at $50\%$-margin violations with $n=1000$), and tight enough to (i) certify anchored decoding as $K$-NAF compliant on every prompt and budget tested, and (ii) detect that an aggressive DP-SGD fine-tune is \emph{not} per-prompt $\frac{\varepsilon^2}{2}$-NAF against pretrained or against its leave-one-out pair.  Together with the multi-family evidence of \S\ref{sec:results}, these are the first published auditing-style numbers on NAF.
+The auditor is conservative (no false positives on $75{,}000$ null trials) and adequately powerful at $50\%$-margin violations ($\ge 88\%$ rejection rate at $n=1000$).  It is tight enough to (i) certify anchored decoding as $K$-NAF compliant on every prompt and budget we tested, and (ii) flag an aggressive DP-SGD fine-tune as \emph{not} per-prompt $\varepsilon^2/2$-NAF either against the pretrained baseline or against its leave-one-out pair.  Combined with the multi-family results in Section~\ref{sec:results}, these are, to our knowledge, the first auditing-style numbers reported for NAF.
 
 \paragraph{Token-level vs.\ sequence-level.}
 The Bernstein bound (\ref{eq:bernstein}) controls the next-token KL.  The KL chain rule \cite[Thm.~3.1]{he2026anchored} turns this into a sequence-level \emph{upper} bound (which is exactly what anchored decoding's analysis exploits) but \emph{not} a sequence-level lower bound, and importance-sampling-corrected estimators inflate the Bernstein gap quickly with sequence length.  Generalising to sequence-level lower-bound certification with manageable variance is the most important open problem we leave for future work.
 
 \paragraph{Power at the boundary.}
-Our power curves saturate at $K_{\mathrm{factor}}\ge 0.95$: a deployer with a real but small (say, $5\%$) overshoot is essentially undetectable at $n=1000$.  Tightening this requires either (a) much larger $n$ (the $1/\sqrt n$ scaling of the Bernstein gap is not improvable in this generality), (b) parametric estimators (e.g.\ MAUVE-style importance sampling) which would lose the formal coverage guarantee, or (c) prompt-aggregation over a known prompt distribution, which converts a per-prompt bound into a marginal-prompt bound and may be easier to certify tightly.
+The power curves saturate for $K_{\mathrm{factor}}\ge 0.95$: a deployer that overshoots its budget by only $5\%$ is effectively undetectable at $n=1000$.  Closing this gap would need either a much larger $n$ (the $1/\sqrt n$ scaling of the Bernstein gap is unimprovable in this generality), parametric estimators such as MAUVE-style importance sampling (which would lose the formal coverage guarantee), or aggregation across a known prompt distribution, which converts a per-prompt bound into a marginal-prompt one and may be easier to certify.
 
 \paragraph{Audit cost.}
-The full power study ($30$ prompts $\times\,5$ sample sizes $\times\,100$ trials = $15{,}000$ Bernstein audits) finishes in $32\,\mathrm{s}$ on a single GPU.  Anchored-decoding audit and DP$\to$NAF audits are dominated by training, not auditing.  Auditing scales linearly with $n$ and is embarrassingly parallel across prompts.
+The full power study ($30$ prompts $\times\,5$ sample sizes $\times\,100$ trials $=15{,}000$ Bernstein audits) finishes in $32\,\mathrm{s}$ on a single GPU.  Runtime in the anchored-decoding and DP$\to$NAF experiments is dominated by training, not auditing.  Audit cost scales linearly in $n$ and is trivially parallel across prompts.
 
 \paragraph{Using the framework.}
 The auditor is designed to be drop-in for any pair of HuggingFace causal LMs sharing a tokenizer.  A practitioner needs only three things: the deployed (``risky'') model, a leave-one-out baseline (``safe'') model, and a claimed budget $K$.  The core call is
-\begin{center}\small\ttfamily
-risky, safe = load\_model\_pair(risky\_name, safe\_name, hw)\\
-result = estimate\_kl(prompt, risky, safe, n\_samples=1000, delta=0.05, claimed\_K=K)
-\end{center}
-returning a lower bound $\widehat{\mathrm{LB}}$, the Bernstein gap $t_n(\delta)$, and a $\textsc{violates}$ flag.  The evolutionary search of Algorithm~\ref{alg:evo} wraps this into a worst-case audit and exposes a single Copyright Leakage Score, and anchored decoding is provided as a drop-in module that mirrors the same API.  We see three practical limits: (i) tokenizer-matched pairs only; (ii) at least grey-box access (log-probs of the safe model on risky-model samples); (iii) reliable detection at $\ge 50\%$ of the budget---near-boundary overshoots are not detectable at $n{\le}5000$ without parametric estimators.  Code is released at \url{https://github.com/<TO_BE_ADDED>}.
+\begin{quote}
+\begin{Verbatim}[fontsize=\small]
+from src.models import load_model_pair
+from src.kl_estimator import estimate_kl
+
+risky, safe = load_model_pair(risky_name, safe_name, hw)
+result = estimate_kl(prompt, risky, safe,
+                     n_samples=1000, delta=0.05, claimed_K=K)
+\end{Verbatim}
+\end{quote}
+returning a lower bound $\widehat{\mathrm{LB}}$, the Bernstein gap $t_n(\delta)$, and a $\textsc{violates}$ flag.  The evolutionary search of Algorithm~\ref{alg:evo} wraps this into a worst-case audit and exposes a single Copyright Leakage Score, and anchored decoding is provided as a drop-in module that mirrors the same API.  We see three practical limits: (i) tokenizer-matched pairs only; (ii) at least grey-box access (log-probs of the safe model on risky-model samples); (iii) reliable detection at $\ge 50\%$ of the budget---near-boundary overshoots are not detectable at $n{\le}5000$ without parametric estimators.  Code is released at \url{https://github.com/kumaram-vipinam200901/Auditing\_framework}.
 
 \paragraph{LLM disclosure.}
 Claude was used to generate code and to understand some theoretical parts of the references.
@@ -399,7 +424,7 @@ A.~Yousefpour, I.~Shilov, A.~Sablayrolles, et~al.
 
 \paragraph{Multi-seed reproducibility.}
 \label{app:repro}
-We re-ran the power study and anchored-decoding tightness study with three independent seeds (42, 43, 44); Table~\ref{tab:repro} reports the results.  Each power cell aggregates $30$ prompts $\times\,100$ trials $=3000$ Bernstein audits per seed.  All non-trivial power cells reproduce within $\pm 0.5$ percentage points; the Type-I FPR is at most $0.07\%$ in any seed (well under $\delta=0.05$).  Anchored-decoding metrics are deterministic given prompts and identical across seeds.  We did not re-seed the DP$\to$NAF experiments (each LOO run $\approx 30\,$min); we instead audit the same checkpoint across $20$ independent prompts.
+The power study and the anchored-decoding tightness study were run with three independent random seeds (42, 43, 44); Table~\ref{tab:repro} reports the results.  Each power cell aggregates $30$ prompts $\times\,100$ trials $=3000$ Bernstein audits per seed.  All non-trivial power cells reproduce within $\pm 0.5$ percentage points; the Type-I FPR is at most $0.07\%$ in any seed (well under $\delta=0.05$).  Anchored-decoding metrics are deterministic given the prompts and are identical across seeds.  The DP$\to$NAF experiments were not re-seeded (each leave-one-out run takes about $30$ minutes); instead the same checkpoint is audited across $20$ independent prompts.
 
 \vspace{-2pt}
 \begin{table}[H]
@@ -474,8 +499,8 @@ $K$ & $\mathrm{KL}_{\mathrm{risky}}$ med./max & $\mathrm{KL}_{\mathrm{anch}}$ me
 \centerline{\small (d) $K$-threshold sweep}
 \end{minipage}
 \vspace{-2pt}
-\caption{\textbf{Mid-report ablations.}  (a) Bound tightens as $\sqrt n$.  (b) Search improves up to ${\sim}5$ rounds.  (c) Format mutations dominate.  (d) Violations decay as $K$ grows.}
-\label{fig:midsem-ablations}
+\caption{\textbf{Auditor ablations.}  (a) Bound tightens as $\sqrt n$.  (b) Search improves up to ${\sim}5$ rounds.  (c) Format mutations dominate.  (d) Violations decay as $K$ grows.}
+\label{fig:auditor-ablations}
 \end{figure}
 
 \begin{figure}[H]

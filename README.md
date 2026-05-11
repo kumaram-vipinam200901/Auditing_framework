@@ -167,7 +167,7 @@ Auto-detected: CUDA → MPS → CPU. All forward passes use `torch.inference_mod
             Near-Access-Freeness Guarantees},
   year   = {2026},
   note   = {NS26Z171 Final Project Report, IIT Madras},
-  url    = {https://github.com/<TO_BE_ADDED>}
+  url    = {https://github.com/kumaram-vipinam200901/Auditing_framework}
 }
 ```
 
